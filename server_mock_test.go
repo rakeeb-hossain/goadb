@@ -1,6 +1,7 @@
 package adb
 
 import (
+	"context"
 	"io"
 	"strings"
 
@@ -36,6 +37,10 @@ func (s *MockServer) Dial() (*wire.Conn, error) {
 		return nil, err
 	}
 	return wire.NewConn(s, s), nil
+}
+
+func (s *MockServer) DialContext(ctx context.Context) (*wire.Conn, error) {
+	return s.Dial()
 }
 
 func (s *MockServer) Start() error {

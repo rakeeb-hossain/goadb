@@ -1,6 +1,7 @@
 package adb
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -128,6 +129,37 @@ func (c *Device) RunCommand(cmd string, args ...string) (string, error) {
 	return string(resp), wrapClientError(err, c, "RunCommand")
 }
 
+func (c *Device) RunCommandContext(ctx context.Context, cmd string, args ...string) (string, error) {
+	cmd, err := prepareCommandLine(cmd, args...)
+	if err != nil {
+		return "", wrapClientError(err, c, "RunCommand")
+	}
+
+	conn, err := c.dialContext(ctx)
+	if err != nil {
+		return "", wrapClientError(err, c, "RunCommand")
+	}
+	go func() {
+		time.Sleep(3 * time.Second)
+		conn.Close()
+	}()
+
+	req := fmt.Sprintf("shell:%s", cmd)
+
+	// Shell responses are special, they don't include a length header.
+	// We read until the stream is closed.
+	// So, we can't use conn.RoundTripSingleResponse.
+	if err = conn.SendMessage([]byte(req)); err != nil {
+		return "", wrapClientError(err, c, "RunCommand")
+	}
+	if _, err = conn.ReadStatus(req); err != nil {
+		return "", wrapClientError(err, c, "RunCommand")
+	}
+
+	resp, err := conn.ReadUntilEof()
+	return string(resp), wrapClientError(err, c, "RunCommand")
+}
+
 /*
 Remount, from the official adb command’s docs:
 
@@ -227,6 +259,26 @@ func (c *Device) getSyncConn() (*wire.SyncConn, error) {
 // by requesting the transport defined by the DeviceDescriptor.
 func (c *Device) dialDevice() (*wire.Conn, error) {
 	conn, err := c.server.Dial()
+	if err != nil {
+		return nil, err
+	}
+
+	req := fmt.Sprintf("host:%s", c.descriptor.getTransportDescriptor())
+	if err = wire.SendMessageString(conn, req); err != nil {
+		conn.Close()
+		return nil, errors.WrapErrf(err, "error connecting to device '%s'", c.descriptor)
+	}
+
+	if _, err = conn.ReadStatus(req); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	return conn, nil
+}
+
+func (c *Device) dialContext(ctx context.Context) (*wire.Conn, error) {
+	conn, err := c.server.DialContext(ctx)
 	if err != nil {
 		return nil, err
 	}

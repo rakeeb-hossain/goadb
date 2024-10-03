@@ -1,6 +1,7 @@
 package adb
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -37,6 +38,10 @@ func TestNewServer_ZeroConfig(t *testing.T) {
 type MockDialer struct{}
 
 func (d MockDialer) Dial(address string) (*wire.Conn, error) {
+	return nil, nil
+}
+
+func (d MockDialer) DialContext(ctx context.Context, address string) (*wire.Conn, error) {
 	return nil, nil
 }
 
