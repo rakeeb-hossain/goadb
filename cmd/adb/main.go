@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/alecthomas/kingpin"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,8 +10,7 @@ import (
 	"time"
 
 	"github.com/cheggaaa/pb"
-	"github.com/zach-klippenstein/goadb"
-	"gopkg.in/alecthomas/kingpin.v2"
+	"github.com/rakeeb-hossain/goadb"
 )
 
 const StdIoFilename = "-"

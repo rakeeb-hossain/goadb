@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/zach-klippenstein/goadb/internal/errors"
+	"github.com/rakeeb-hossain/goadb/internal/errors"
 )
 
 type SyncSender interface {
