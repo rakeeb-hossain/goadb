@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	stderr "errors"
 	"github.com/rakeeb-hossain/goadb/internal/errors"
 	"github.com/rakeeb-hossain/goadb/wire"
 )
@@ -269,6 +270,23 @@ func prepareCommandLine(cmd string, args ...string) (string, error) {
 	return cmd, nil
 }
 
+func roundTripUntilEof(conn *wire.Conn, req string) ([]byte, error) {
+	var err error
+	if err = conn.SendMessage([]byte(req)); err != nil {
+		return nil, fmt.Errorf("SendMessage failed: %w", err)
+	}
+	if _, err = conn.ReadStatus(req); err != nil {
+		return nil, fmt.Errorf("ReadStatus failed: %w", err)
+	}
+	resp, err := conn.ReadUntilEof()
+	if err != nil {
+		return nil, fmt.Errorf("ReadUntilEof failed: %w", err)
+	}
+	return resp, nil
+}
+
+var ErrNoOp = stderr.New("no-op")
+
 /*
 Root restarts adbd in root
 
@@ -277,11 +295,52 @@ Corresponds to the command:
 	adb root
 */
 func (c *Device) Root() error {
-	_, err := roundTripSingleResponse(c.server, fmt.Sprintf("%s:root", c.descriptor.getHostPrefix()))
+	conn, err := c.dialDevice()
 	if err != nil {
-		return wrapClientError(err, c, "Root")
+		return fmt.Errorf("dialDevice failed: %w", err)
 	}
-	return nil
+	defer conn.Close()
+
+	resp, err := roundTripUntilEof(conn, "root:")
+	if err != nil {
+		return fmt.Errorf("roundTripUntilEof failed: %w", err)
+	}
+	respStr := string(resp)
+	if strings.Contains(respStr, "restarting adbd as root") {
+		return nil
+	} else if strings.Contains(respStr, "adbd is already running as root") {
+		return ErrNoOp
+	} else {
+		return fmt.Errorf("unexpected response: %s", respStr)
+	}
+}
+
+/*
+Unroot restarts adbd as non-root
+
+Corresponds to the command:
+
+	adb unroot
+*/
+func (c *Device) Unroot() error {
+	conn, err := c.dialDevice()
+	if err != nil {
+		return fmt.Errorf("dialDevice failed: %w", err)
+	}
+	defer conn.Close()
+
+	resp, err := roundTripUntilEof(conn, "unroot:")
+	if err != nil {
+		return fmt.Errorf("roundTripUntilEof failed: %w", err)
+	}
+	respStr := string(resp)
+	if strings.Contains(respStr, "restarting adbd as non root") {
+		return nil
+	} else if strings.Contains(respStr, "adbd not running as root") {
+		return ErrNoOp
+	} else {
+		return fmt.Errorf("unexpected unroot response: %s", respStr)
+	}
 }
 
 type DeviceConnectionState string
@@ -292,9 +351,27 @@ const (
 )
 
 func (c *Device) WaitFor(state DeviceConnectionState) error {
-	_, err := roundTripSingleResponse(c.server, fmt.Sprintf("%s:wait-for-%s", c.descriptor.getHostPrefix(), state))
+	conn, err := c.server.Dial()
 	if err != nil {
-		return wrapClientError(err, c, "WaitFor")
+		return fmt.Errorf("server Dial: %w", err)
 	}
+	defer conn.Close()
+
+	cmd := fmt.Sprintf("%s:wait-for-any-%s", c.descriptor.getHostPrefix(), state)
+	resp, err := roundTripUntilEof(conn, cmd)
+	if err != nil {
+		return fmt.Errorf("roundTripUntilEof err: %w", err)
+	}
+	println(resp)
 	return nil
+
+	/*
+		return string(resp), wrapClientError(err, c, "Remount")
+		cmd := fmt.Sprintf("host:wait-for-any-device")
+		_, err := roundTripSingleResponse(c.server, cmd)
+		if err != nil {
+			return wrapClientError(err, c, "WaitFor")
+		}
+		return nil
+	*/
 }

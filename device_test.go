@@ -119,3 +119,12 @@ func code(err error) errors.ErrCode {
 func message(err error) string {
 	return err.(*errors.Err).Message
 }
+
+func TestDevice_WaitFor(t *testing.T) {
+	client, err := New()
+	assert.Nil(t, err)
+
+	device := client.Device(DeviceWithSerial("172.31.27.64:5555"))
+	err = device.WaitFor(DeviceConnected)
+	assert.Nil(t, err)
+}
