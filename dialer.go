@@ -1,6 +1,7 @@
 package adb
 
 import (
+	"context"
 	"io"
 	"net"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 // Dialer knows how to create connections to an adb server.
 type Dialer interface {
 	Dial(address string) (*wire.Conn, error)
+	DialContext(ctx context.Context, address string) (*wire.Conn, error)
 }
 
 type tcpDialer struct{}
@@ -40,4 +42,30 @@ func (tcpDialer) Dial(address string) (*wire.Conn, error) {
 		Scanner: wire.NewScanner(safeConn),
 		Sender:  wire.NewSender(safeConn),
 	}, nil
+}
+
+func (tcpDialer) DialContext(ctx context.Context, address string) (*wire.Conn, error) {
+	var d net.Dialer
+	netConn, err := d.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return nil, errors.WrapErrorf(err, errors.ServerNotAvailable, "error dialing %s", address)
+	}
+
+	// net.Conn can't be closed more than once, but wire.Conn will try to close both sender and scanner
+	// so we need to wrap it to make it safe.
+	safeConn := wire.MultiCloseable(netConn)
+
+	// Prevent leaking the network connection, not sure if TCPConn does this itself.
+	// Note that the network connection may still be in use after the conn isn't (scanners/senders
+	// can give their underlying connections to other scanner/sender types), so we can't
+	// set the finalizer on conn.
+	runtime.SetFinalizer(safeConn, func(conn io.ReadWriteCloser) {
+		conn.Close()
+	})
+
+	return &wire.Conn{
+		Scanner: wire.NewScanner(safeConn),
+		Sender:  wire.NewSender(safeConn),
+	}, nil
+
 }

@@ -1,6 +1,7 @@
 package adb
 
 import (
+	"context"
 	stderrors "errors"
 	"fmt"
 	"os"
@@ -37,6 +38,7 @@ type ServerConfig struct {
 type server interface {
 	Start() error
 	Dial() (*wire.Conn, error)
+	DialContext(ctx context.Context) (*wire.Conn, error)
 }
 
 func roundTripSingleResponse(s server, req string) ([]byte, error) {
@@ -93,6 +95,22 @@ func newServer(config ServerConfig) (server, error) {
 // retrying. If the second attempt fails, returns the error.
 func (s *realServer) Dial() (*wire.Conn, error) {
 	conn, err := s.config.Dial(s.address)
+	if err != nil {
+		// Attempt to start the server and try again.
+		if err = s.Start(); err != nil {
+			return nil, errors.WrapErrorf(err, errors.ServerNotAvailable, "error starting server for dial")
+		}
+
+		conn, err = s.config.Dial(s.address)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return conn, nil
+}
+
+func (s *realServer) DialContext(ctx context.Context) (*wire.Conn, error) {
+	conn, err := s.config.DialContext(ctx, s.address)
 	if err != nil {
 		// Attempt to start the server and try again.
 		if err = s.Start(); err != nil {

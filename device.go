@@ -1,6 +1,7 @@
 package adb
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -130,6 +131,79 @@ func (c *Device) RunCommand(cmd string, args ...string) (string, error) {
 	return string(resp), wrapClientError(err, c, "RunCommand")
 }
 
+func (c *Device) RunCommandContext(ctx context.Context, cmd string, args ...string) (string, error) {
+	preparedCmd, err := prepareCommandLine(cmd, args...)
+	if err != nil {
+		return "", fmt.Errorf("prepareCommandLine err: %w", err)
+	}
+
+	conn, err := c.dialContext(ctx)
+	if err != nil {
+		return "", fmt.Errorf("dialContext err: %w", err)
+	}
+	defer conn.Close()
+
+	req := fmt.Sprintf("shell:%s", preparedCmd)
+
+	// Shell responses are special, they don't include a length header.
+	// We read until the stream is closed.
+	// So, we can't use conn.RoundTripSingleResponse.
+	if err = conn.SendMessage([]byte(req)); err != nil {
+		return "", fmt.Errorf("conn.SendMessage err: %w", err)
+	}
+	if _, err = conn.ReadStatus(req); err != nil {
+		return "", fmt.Errorf("conn.ReadStatus err: %w", err)
+	}
+
+	cmdDone := make(chan struct{})
+	// Listen for context cancellation or command completion
+	go func() {
+		select {
+		case <-cmdDone:
+			return
+		case <-ctx.Done():
+		}
+
+		// Find proc and kill. Remove path in cmd.
+		components := strings.Split(cmd, "/")
+		process := components[len(components)-1]
+		fullCommand := process
+		if len(args) > 0 {
+			argsString := strings.Join(args, " ")
+			fullCommand = fmt.Sprintf("%s %s", process, argsString)
+		}
+
+		procFetchCmd := fmt.Sprintf("ps -f -A | grep '%s' | sed 's/   */ /g' | cut -d ' ' -f 2 | head -n 1", fullCommand)
+		println(procFetchCmd)
+		out, err := c.RunCommand(procFetchCmd)
+		if err != nil {
+			log.Printf("failed to fetch matching processes: %+v", err)
+			return
+		}
+		out = strings.TrimSpace(out)
+		if len(out) == 0 {
+			log.Println("output from kill was empty")
+			return
+		}
+		log.Printf("Killing PID %s", out)
+		if _, err = c.RunCommand(fmt.Sprintf("kill %s", out)); err != nil {
+			log.Printf("failed to kill: %+v", err)
+		}
+	}()
+	defer func() { close(cmdDone) }()
+
+	resp, err := conn.ReadUntilEof()
+	switch true {
+	// Was there an error because context expired or was cancelled?
+	case ctx.Err() != nil:
+		return string(resp), ctx.Err()
+	case err != nil:
+		return string(resp), fmt.Errorf("conn.ReadUntilEof err: %w", err)
+	default:
+		return string(resp), nil
+	}
+}
+
 /*
 Remount, from the official adb command’s docs:
 
@@ -229,6 +303,26 @@ func (c *Device) getSyncConn() (*wire.SyncConn, error) {
 // by requesting the transport defined by the DeviceDescriptor.
 func (c *Device) dialDevice() (*wire.Conn, error) {
 	conn, err := c.server.Dial()
+	if err != nil {
+		return nil, err
+	}
+
+	req := fmt.Sprintf("host:%s", c.descriptor.getTransportDescriptor())
+	if err = wire.SendMessageString(conn, req); err != nil {
+		conn.Close()
+		return nil, errors.WrapErrf(err, "error connecting to device '%s'", c.descriptor)
+	}
+
+	if _, err = conn.ReadStatus(req); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	return conn, nil
+}
+
+func (c *Device) dialContext(ctx context.Context) (*wire.Conn, error) {
+	conn, err := c.server.DialContext(ctx)
 	if err != nil {
 		return nil, err
 	}
