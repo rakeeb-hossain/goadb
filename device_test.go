@@ -1,7 +1,9 @@
 package adb
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/rakeeb-hossain/goadb/internal/errors"
 	"github.com/rakeeb-hossain/goadb/wire"
@@ -118,4 +120,14 @@ func code(err error) errors.ErrCode {
 
 func message(err error) string {
 	return err.(*errors.Err).Message
+}
+
+func TestDevice_RunCommandContext(t *testing.T) {
+	client, _ := New()
+	device := client.Device(DeviceWithSerial("127.0.0.1:6555"))
+
+	ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
+	out, err := device.RunCommandContext(ctx, "/data/local/frida-server -l 0.0.0.0:2555")
+	assert.NotNil(t, err)
+	println(out)
 }

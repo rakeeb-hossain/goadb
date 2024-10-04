@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -130,34 +131,76 @@ func (c *Device) RunCommand(cmd string, args ...string) (string, error) {
 }
 
 func (c *Device) RunCommandContext(ctx context.Context, cmd string, args ...string) (string, error) {
-	cmd, err := prepareCommandLine(cmd, args...)
+	preparedCmd, err := prepareCommandLine(cmd, args...)
 	if err != nil {
-		return "", wrapClientError(err, c, "RunCommand")
+		return "", fmt.Errorf("prepareCommandLine err: %w", err)
 	}
 
 	conn, err := c.dialContext(ctx)
 	if err != nil {
-		return "", wrapClientError(err, c, "RunCommand")
+		return "", fmt.Errorf("dialContext err: %w", err)
 	}
-	go func() {
-		time.Sleep(3 * time.Second)
-		conn.Close()
-	}()
+	defer conn.Close()
 
-	req := fmt.Sprintf("shell:%s", cmd)
+	req := fmt.Sprintf("shell:%s", preparedCmd)
 
 	// Shell responses are special, they don't include a length header.
 	// We read until the stream is closed.
 	// So, we can't use conn.RoundTripSingleResponse.
 	if err = conn.SendMessage([]byte(req)); err != nil {
-		return "", wrapClientError(err, c, "RunCommand")
+		return "", fmt.Errorf("conn.SendMessage err: %w", err)
 	}
 	if _, err = conn.ReadStatus(req); err != nil {
-		return "", wrapClientError(err, c, "RunCommand")
+		return "", fmt.Errorf("conn.ReadStatus err: %w", err)
 	}
 
+	cmdDone := make(chan struct{})
+	// Listen for context cancellation or command completion
+	go func() {
+		select {
+		case <-cmdDone:
+			return
+		case <-ctx.Done():
+		}
+
+		// Find proc and kill. Remove path in cmd.
+		components := strings.Split(cmd, "/")
+		process := components[len(components)-1]
+		fullCommand := process
+		if len(args) > 0 {
+			argsString := strings.Join(args, " ")
+			fullCommand = fmt.Sprintf("%s %s", process, argsString)
+		}
+
+		procFetchCmd := fmt.Sprintf("ps -f -A | grep '%s' | sed 's/   */ /g' | cut -d ' ' -f 2 | head -n 1", fullCommand)
+		println(procFetchCmd)
+		out, err := c.RunCommand(procFetchCmd)
+		if err != nil {
+			log.Printf("failed to fetch matching processes: %+v", err)
+			return
+		}
+		out = strings.TrimSpace(out)
+		if len(out) == 0 {
+			log.Println("output from kill was empty")
+			return
+		}
+		log.Printf("Killing PID %s", out)
+		if _, err = c.RunCommand(fmt.Sprintf("kill %s", out)); err != nil {
+			log.Printf("failed to kill: %+v", err)
+		}
+	}()
+	defer func() { close(cmdDone) }()
+
 	resp, err := conn.ReadUntilEof()
-	return string(resp), wrapClientError(err, c, "RunCommand")
+	switch true {
+	// Was there an error because context expired or was cancelled?
+	case ctx.Err() != nil:
+		return string(resp), ctx.Err()
+	case err != nil:
+		return string(resp), fmt.Errorf("conn.ReadUntilEof err: %w", err)
+	default:
+		return string(resp), nil
+	}
 }
 
 /*
