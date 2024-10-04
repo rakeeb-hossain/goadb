@@ -3,6 +3,7 @@ package adb
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -362,16 +363,9 @@ func (c *Device) WaitFor(state DeviceConnectionState) error {
 	if err != nil {
 		return fmt.Errorf("roundTripUntilEof err: %w", err)
 	}
-	println(resp)
+	respStr := strings.TrimSpace(string(resp))
+	if respStr != "" {
+		log.Printf("Unexpected WaitFor response: %+v", respStr)
+	}
 	return nil
-
-	/*
-		return string(resp), wrapClientError(err, c, "Remount")
-		cmd := fmt.Sprintf("host:wait-for-any-device")
-		_, err := roundTripSingleResponse(c.server, cmd)
-		if err != nil {
-			return wrapClientError(err, c, "WaitFor")
-		}
-		return nil
-	*/
 }
