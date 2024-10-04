@@ -174,7 +174,6 @@ func (c *Device) RunCommandContext(ctx context.Context, cmd string, args ...stri
 		}
 
 		procFetchCmd := fmt.Sprintf("ps -f -A | grep '%s' | sed 's/   */ /g' | cut -d ' ' -f 2 | head -n 1", fullCommand)
-		println(procFetchCmd)
 		out, err := c.RunCommand(procFetchCmd)
 		if err != nil {
 			log.Printf("failed to fetch matching processes: %+v", err)
