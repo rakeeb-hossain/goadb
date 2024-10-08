@@ -2,6 +2,7 @@ package adb
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,7 +137,8 @@ func TestDevice_RunCommandContext(t *testing.T) {
 	device := client.Device(DeviceWithSerial("127.0.0.1:6555"))
 
 	ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
-	out, err := device.RunCommandContext(ctx, "/data/local/frida-server -l 0.0.0.0:2555")
+	out, err := device.RunCommandContext(ctx, `while true; do echo "test"; sleep 1; done`)
 	assert.NotNil(t, err)
+	assert.NotEqual(t, strings.TrimSpace(out), "")
 	println(out)
 }

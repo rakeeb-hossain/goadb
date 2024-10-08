@@ -156,8 +156,12 @@ func (c *Device) RunCommandContext(ctx context.Context, cmd string, args ...stri
 	}
 
 	cmdDone := make(chan struct{})
+	cleanupDone := make(chan struct{})
 	// Listen for context cancellation or command completion
 	go func() {
+		defer func() {
+			close(cleanupDone)
+		}()
 		select {
 		case <-cmdDone:
 			return
@@ -172,8 +176,10 @@ func (c *Device) RunCommandContext(ctx context.Context, cmd string, args ...stri
 			argsString := strings.Join(args, " ")
 			fullCommand = fmt.Sprintf("%s %s", process, argsString)
 		}
+		// Escape fullCommand string
+		fullCommand = strings.ReplaceAll(fullCommand, "\"", "\\\"")
 
-		procFetchCmd := fmt.Sprintf("ps -f -A | grep '%s' | sed 's/   */ /g' | cut -d ' ' -f 2 | head -n 1", fullCommand)
+		procFetchCmd := fmt.Sprintf(`ps -f -A | grep "%s" | sed 's/   */ /g' | cut -d " " -f 2 | head -n 1`, fullCommand)
 		out, err := c.RunCommand(procFetchCmd)
 		if err != nil {
 			log.Printf("failed to fetch matching processes: %+v", err)
@@ -195,6 +201,7 @@ func (c *Device) RunCommandContext(ctx context.Context, cmd string, args ...stri
 	switch true {
 	// Was there an error because context expired or was cancelled?
 	case ctx.Err() != nil:
+		<-cleanupDone
 		return string(resp), ctx.Err()
 	case err != nil:
 		return string(resp), fmt.Errorf("conn.ReadUntilEof err: %w", err)
