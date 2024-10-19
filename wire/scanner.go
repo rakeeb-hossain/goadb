@@ -147,6 +147,7 @@ func readMessage(r io.Reader, lengthReader lengthReader) ([]byte, error) {
 	} else if err == io.ErrUnexpectedEOF {
 		return data, errIncompleteMessage("message data", n, length)
 	}
+	println(string(data))
 	return data, nil
 }
 
@@ -164,9 +165,12 @@ func readHexLength(r io.Reader) (int, error) {
 	}
 
 	// Clip the length to 255, as per the Google implementation.
-	if length > MaxMessageLength {
-		length = MaxMessageLength
-	}
+	// RKB: removed
+	/*
+		if length > MaxMessageLength {
+			length = MaxMessageLength
+		}
+	*/
 
 	return int(length), nil
 }
