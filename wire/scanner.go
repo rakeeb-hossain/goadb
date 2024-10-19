@@ -147,7 +147,6 @@ func readMessage(r io.Reader, lengthReader lengthReader) ([]byte, error) {
 	} else if err == io.ErrUnexpectedEOF {
 		return data, errIncompleteMessage("message data", n, length)
 	}
-	println(string(data))
 	return data, nil
 }
 
