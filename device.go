@@ -131,6 +131,23 @@ func (c *Device) RunCommand(cmd string, args ...string) (string, error) {
 	return string(resp), wrapClientError(err, c, "RunCommand")
 }
 
+// the returned done func should only be used once on success
+func connUseContext(ctx context.Context, conn *wire.Conn) func() {
+	doneChan := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if err := conn.Close(); err != nil {
+				log.Printf("failed to close conn: %+v", err)
+			}
+		case <-doneChan:
+		}
+	}()
+	return func() {
+		close(doneChan)
+	}
+}
+
 func (c *Device) RunCommandContext(ctx context.Context, cmd string, args ...string) (string, error) {
 	preparedCmd, err := prepareCommandLine(cmd, args...)
 	if err != nil {
@@ -141,7 +158,6 @@ func (c *Device) RunCommandContext(ctx context.Context, cmd string, args ...stri
 	if err != nil {
 		return "", fmt.Errorf("dialContext err: %w", err)
 	}
-	defer conn.Close()
 
 	req := fmt.Sprintf("shell:%s", preparedCmd)
 
@@ -156,46 +172,64 @@ func (c *Device) RunCommandContext(ctx context.Context, cmd string, args ...stri
 	}
 
 	cmdDone := make(chan struct{})
+	defer close(cmdDone)
+	// Cleanup goroutine
 	cleanupDone := make(chan struct{})
-	// Listen for context cancellation or command completion
 	go func() {
-		defer func() {
-			close(cleanupDone)
-		}()
+		defer close(cleanupDone)
 		select {
 		case <-cmdDone:
 			return
 		case <-ctx.Done():
 		}
 
-		// Find proc and kill. Remove path in cmd.
-		components := strings.Split(cmd, "/")
-		process := components[len(components)-1]
-		fullCommand := process
-		if len(args) > 0 {
-			argsString := strings.Join(args, " ")
-			fullCommand = fmt.Sprintf("%s %s", process, argsString)
-		}
-		// Escape fullCommand string
-		fullCommand = strings.ReplaceAll(fullCommand, "\"", "\\\"")
+		// Context expired, try to kill command but set an expiry on trying to kill.
+		if err = func() error {
+			// Find proc and kill. Remove path in cmd.
+			components := strings.Split(cmd, "/")
+			process := components[len(components)-1]
+			fullCommand := process
+			if len(args) > 0 {
+				argsString := strings.Join(args, " ")
+				fullCommand = fmt.Sprintf("%s %s", process, argsString)
+			}
+			// Escape fullCommand string
+			fullCommand = strings.ReplaceAll(fullCommand, "\"", "\\\"")
 
-		procFetchCmd := fmt.Sprintf(`ps -f -A | grep "%s" | sed 's/   */ /g' | cut -d " " -f 2 | head -n 1`, fullCommand)
-		out, err := c.RunCommand(procFetchCmd)
-		if err != nil {
-			log.Printf("failed to fetch matching processes: %+v", err)
-			return
-		}
-		out = strings.TrimSpace(out)
-		if len(out) == 0 {
-			log.Println("output from kill was empty")
-			return
-		}
-		log.Printf("Killing PID %s", out)
-		if _, err = c.RunCommand(fmt.Sprintf("kill %s", out)); err != nil {
-			log.Printf("failed to kill: %+v", err)
+			log.Printf("Killing proc %s", process)
+			fetchAndKillRawCmd := fmt.Sprintf(`ps -f -A | grep "%s" | sed 's/   */ /g' | cut -d " " -f 2 | head -n 1 | xargs kill`, fullCommand)
+			fetchAndKillCmd, err := prepareCommandLine(fetchAndKillRawCmd)
+			if err != nil {
+				return fmt.Errorf("failed to prep fetch and kill cmd: %w", err)
+			}
+
+			// Set a timer on kill ctx and dial
+			killCtx, cancelKillCtx := context.WithTimeout(context.Background(), time.Second)
+			defer cancelKillCtx()
+			killConn, err := c.dialDevice()
+			if err != nil {
+				return fmt.Errorf("dialContext err: %w", err)
+			}
+			defer killConn.Close()
+
+			// Enforce context expiry closing the connection
+			killDone := connUseContext(killCtx, killConn)
+			defer killDone()
+			req = fmt.Sprintf("shell:%s", fetchAndKillCmd)
+			if err = killConn.SendMessage([]byte(req)); err != nil {
+				return fmt.Errorf("failed to run fetchAndKillCmd: %w", err)
+			}
+
+			if _, err = killConn.ReadStatus(req); err != nil {
+				return fmt.Errorf("failed to read status from fetchAndKillCmd: %w", err)
+			}
+			return nil
+		}(); err != nil {
+			// If kill fails, the original process' conn will close using this defer call instead.
+			conn.Close()
+			log.Printf("Failed to run proc cleanup: %+v", err)
 		}
 	}()
-	defer func() { close(cmdDone) }()
 
 	resp, err := conn.ReadUntilEof()
 	switch true {
@@ -395,12 +429,14 @@ Corresponds to the command:
 
 	adb root
 */
-func (c *Device) Root() error {
-	conn, err := c.dialDevice()
+func (c *Device) Root(ctx context.Context) error {
+	conn, err := c.dialContext(ctx)
 	if err != nil {
 		return fmt.Errorf("dialDevice failed: %w", err)
 	}
 	defer conn.Close()
+	done := connUseContext(ctx, conn)
+	defer done()
 
 	resp, err := roundTripUntilEof(conn, "root:")
 	if err != nil {
@@ -423,12 +459,14 @@ Corresponds to the command:
 
 	adb unroot
 */
-func (c *Device) Unroot() error {
-	conn, err := c.dialDevice()
+func (c *Device) Unroot(ctx context.Context) error {
+	conn, err := c.dialContext(ctx)
 	if err != nil {
 		return fmt.Errorf("dialDevice failed: %w", err)
 	}
 	defer conn.Close()
+	done := connUseContext(ctx, conn)
+	defer done()
 
 	resp, err := roundTripUntilEof(conn, "unroot:")
 	if err != nil {
@@ -451,12 +489,14 @@ const (
 	DeviceDisconnected = "disconnect"
 )
 
-func (c *Device) WaitFor(state DeviceConnectionState) error {
-	conn, err := c.server.Dial()
+func (c *Device) WaitFor(ctx context.Context, state DeviceConnectionState) error {
+	conn, err := c.server.DialContext(ctx)
 	if err != nil {
 		return fmt.Errorf("server Dial: %w", err)
 	}
 	defer conn.Close()
+	done := connUseContext(ctx, conn)
+	defer done()
 
 	cmd := fmt.Sprintf("%s:wait-for-any-%s", c.descriptor.getHostPrefix(), state)
 	resp, err := roundTripUntilEof(conn, cmd)

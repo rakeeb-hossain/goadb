@@ -2,7 +2,6 @@ package adb
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -128,7 +127,7 @@ func TestDevice_WaitFor(t *testing.T) {
 	assert.Nil(t, err)
 
 	device := client.Device(DeviceWithSerial("172.31.27.64:5555"))
-	err = device.WaitFor(DeviceConnected)
+	err = device.WaitFor(context.Background(), DeviceConnected)
 	assert.Nil(t, err)
 }
 
@@ -139,6 +138,20 @@ func TestDevice_RunCommandContext(t *testing.T) {
 	ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
 	out, err := device.RunCommandContext(ctx, `while true; do echo "test"; sleep 1; done`)
 	assert.NotNil(t, err)
-	assert.NotEqual(t, strings.TrimSpace(out), "")
+	assert.Equal(t, ctx.Err(), err)
+	assert.NotEqual(t, "", out)
 	println(out)
+}
+
+func TestDevice_RunCommandFridaServerContext(t *testing.T) {
+	client, _ := New()
+	device := client.Device(DeviceWithSerial("127.0.0.1:6555"))
+
+	for range 10 {
+		ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
+		out, err := device.RunCommandContext(ctx, `/data/local/frida-server`)
+		assert.NotNil(t, err)
+		assert.Equal(t, ctx.Err(), err)
+		println(out)
+	}
 }
